@@ -24,30 +24,37 @@ async function initDB() {
     await newDb.instantiate(bundle.mainModule, bundle.pthreadWorker);
     URL.revokeObjectURL(worker_url);
 
-    // Use browser's Origin Private File System for persistence
-    await newDb.open({ path: 'rag-app.db' });
+    // FIX: Open an in-memory database first, then ATTACH the OPFS database file.
+    // This is a robust workaround for browsers where directly opening a non-existent OPFS file fails.
+    // The ATTACH command will create the database file if it doesn't exist.
+    await newDb.open({ path: ':memory:' });
     db = newDb;
 
-    // Create tables if they don't exist
     const c = await db.connect();
-    await c.query(`
-        CREATE TABLE IF NOT EXISTS files (
-            id TEXT PRIMARY KEY,
-            name TEXT,
-            size BIGINT,
-            processedAt TEXT
-        );
-    `);
-    await c.query(`
-        CREATE TABLE IF NOT EXISTS chunks (
-            id TEXT PRIMARY KEY,
-            fileId TEXT,
-            fileName TEXT,
-            content TEXT,
-            vector FLOAT[]
-        );
-    `);
-    await c.close();
+    try {
+        await c.query(`ATTACH 'rag-app.db' AS opfs_db;`);
+        
+        // Create tables in the attached OPFS database if they don't exist
+        await c.query(`
+            CREATE TABLE IF NOT EXISTS opfs_db.files (
+                id TEXT PRIMARY KEY,
+                name TEXT,
+                size BIGINT,
+                processedAt TEXT
+            );
+        `);
+        await c.query(`
+            CREATE TABLE IF NOT EXISTS opfs_db.chunks (
+                id TEXT PRIMARY KEY,
+                fileId TEXT,
+                fileName TEXT,
+                content TEXT,
+                vector FLOAT[]
+            );
+        `);
+    } finally {
+        await c.close();
+    }
     
     return db;
 }
@@ -64,8 +71,8 @@ export const useVectorStore = () => {
             try {
                 await initDB();
                 const c = await db!.connect();
-                // FIX: Removed generic type argument from c.query to resolve TypeScript error. A cast is added to row.toJSON() to preserve type safety.
-                const filesResult = await c.query(`SELECT id, name, size, processedAt FROM files;`);
+                // Query from the attached database
+                const filesResult = await c.query(`SELECT id, name, size, processedAt FROM opfs_db.files;`);
                 setFiles(filesResult.toArray().map(row => row.toJSON() as StoredFile));
                 await c.close();
                 setIsDBReady(true);
@@ -97,21 +104,19 @@ export const useVectorStore = () => {
 
         const c = await db.connect();
         try {
-            // FIX: The 'run' method does not exist on AsyncDuckDBConnection. Use 'prepare' and 'query' for parameterized queries.
+            // Insert into the attached database
             const fileInsertStmt = await c.prepare(
-                'INSERT INTO files (id, name, size, processedAt) VALUES (?, ?, ?, ?)'
+                'INSERT INTO opfs_db.files (id, name, size, processedAt) VALUES (?, ?, ?, ?)'
             );
             await fileInsertStmt.query(newFile.id, newFile.name, newFile.size, newFile.processedAt);
             await fileInsertStmt.close();
 
-            // Prepare statement for efficient chunk insertion
-            const stmt = await c.prepare('INSERT INTO chunks (id, fileId, fileName, content, vector) VALUES (?, ?, ?, ?, ?)');
+            const stmt = await c.prepare('INSERT INTO opfs_db.chunks (id, fileId, fileName, content, vector) VALUES (?, ?, ?, ?, ?)');
 
             for (let i = 0; i < rawChunks.length; i++) {
                 const chunkContent = rawChunks[i];
                 const vector = await generateEmbedding(settings, chunkContent);
                 const chunkId = `chunk_${fileId}_${i}`;
-                // FIX: The 'run' method does not exist on AsyncPreparedStatement. Use 'query' instead.
                 await stmt.query(chunkId, fileId, file.name, chunkContent, vector);
             }
 
@@ -119,7 +124,6 @@ export const useVectorStore = () => {
 
         } catch(err) {
             console.error('DB transaction failed', err);
-            // Rollback might be needed in a more complex scenario
             throw err;
         } finally {
             await c.close();
@@ -134,13 +138,12 @@ export const useVectorStore = () => {
 
         const c = await db.connect();
         try {
-            // FIX: The 'run' method does not exist on AsyncDuckDBConnection. Use 'prepare' and 'query' for parameterized queries.
-            const deleteFilesStmt = await c.prepare('DELETE FROM files WHERE id = ?');
+            // Delete from the attached database
+            const deleteFilesStmt = await c.prepare('DELETE FROM opfs_db.files WHERE id = ?');
             await deleteFilesStmt.query(fileId);
             await deleteFilesStmt.close();
             
-            // FIX: The 'run' method does not exist on AsyncDuckDBConnection. Use 'prepare' and 'query' for parameterized queries.
-            const deleteChunksStmt = await c.prepare('DELETE FROM chunks WHERE fileId = ?');
+            const deleteChunksStmt = await c.prepare('DELETE FROM opfs_db.chunks WHERE fileId = ?');
             await deleteChunksStmt.query(fileId);
             await deleteChunksStmt.close();
         } finally {
@@ -155,10 +158,9 @@ export const useVectorStore = () => {
 
         const c = await db.connect();
         try {
-            // FIX: The 'run' method does not exist on AsyncDuckDBConnection. Use 'query' for non-parameterized queries.
-            await c.query('DELETE FROM files');
-            // FIX: The 'run' method does not exist on AsyncDuckDBConnection. Use 'query' for non-parameterized queries.
-            await c.query('DELETE FROM chunks');
+            // Delete from the attached database
+            await c.query('DELETE FROM opfs_db.files');
+            await c.query('DELETE FROM opfs_db.chunks');
         } finally {
             await c.close();
         }
@@ -173,15 +175,14 @@ export const useVectorStore = () => {
         const c = await db.connect();
 
         try {
-            // Use DuckDB's native vector functions for efficient similarity search
-            // FIX: Removed generic type argument from c.query to resolve a TypeScript error. A cast is added to row.toJSON() to preserve type safety.
+            // Search in the attached database
             const queryResult = await c.query(`
                 WITH scores AS (
                     SELECT 
                         *, 
                         list_dot_product(vector, [${queryVector.join(',')}]) / 
                         (list_norm(vector) * list_norm([${queryVector.join(',')}])) as similarity
-                    FROM chunks
+                    FROM opfs_db.chunks
                 )
                 SELECT id, fileId, fileName, content, vector
                 FROM scores
