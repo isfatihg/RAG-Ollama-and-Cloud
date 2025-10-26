@@ -1,0 +1,5 @@
+{
+  "name": "Copy of Local & Cloud RAG UI",
+  "description": "A user-friendly interface for a Retrieval-Augmented Generation (RAG) system. Upload documents, configure local (Ollama) or cloud (OpenRouter) models, and chat with your data. Embeddings and files are stored locally for persistence.",
+  "requestFramePermissions": []
+}

@@ -1,0 +1,15 @@
+# This is a frontend-only web application.
+# All runtime dependencies (React, DuckDB, etc.) are loaded via a CDN in the index.html file.
+# This file is included for project context and to help with local development.
+
+# To serve the static files, you can use Python's built-in web server,
+# which requires no external packages. From the project root, run:
+#
+# python3 -m http.server
+#
+# Then open http://localhost:8000 in your browser.
+
+# If you prefer to use a more robust server for development, you could use Flask.
+# In that case, you would uncomment the line below and install it via `pip install -r requirements.txt`.
+#
+# flask
